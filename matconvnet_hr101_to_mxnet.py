@@ -7,6 +7,7 @@ import mxnet as mx
 import numpy as np
 import scipy.io as sio
 
+import pickle
 
 # In[63]:
 
@@ -22,7 +23,9 @@ matpath='./hr_res101.mat'
 
 f = sio.loadmat(matpath)
 net = f['net']
-
+clusters = np.copy(net['meta'][0][0][0][0][6])
+averageImage = np.copy(net['meta'][0][0][0][0][2][0][0][2])
+averageImage = averageImage[:, np.newaxis]
 
 # In[66]:
 
@@ -32,11 +35,11 @@ conv1 = mx.symbol.Convolution(name='conv1', data=data , num_filter=64, pad=(3, 3
 bn_conv1 = mx.symbol.BatchNorm(name='bn_conv1', data=conv1 , use_global_stats=True, fix_gamma=False, eps=0.00001, cudnn_off=True)
 conv1_relu = mx.symbol.Activation(name='conv1_relu', data=bn_conv1 , act_type='relu')
 # pad right and bottom as the origin matconvnet implementation
-conv1_relu_padded = mx.symbol.pad(name='conv1_relu_padded', data=conv1_relu, mode='constant', constant_value=0, pad_width=(0,0,0,0,0,1,0,1))
+#   conv1_relu_padded = mx.symbol.pad(name='conv1_relu_padded', data=conv1_relu, mode='constant', constant_value=0, pad_width=(0,0,0,0,0,1,0,1))
 # pool in matconvnet use 'valid' mode but not 'full'
-pool1 = mx.symbol.Pooling(name='pool1', data=conv1_relu_padded , pooling_convention='valid', pad=(0,0), kernel=(3,3), stride=(2,2), pool_type='max')
+#   pool1 = mx.symbol.Pooling(name='pool1', data=conv1_relu_padded , pooling_convention='valid', pad=(0,0), kernel=(3,3), stride=(2,2), pool_type='max')
 # another choice to deal with the matconvnet's right and bottom padding
-# pool1 = mx.symbol.Pooling(name='pool1', data=conv1_relu , pooling_convention='full', pad=(0,0), kernel=(3,3), stride=(2,2), pool_type='max')
+pool1 = mx.symbol.Pooling(name='pool1', data=conv1_relu , pooling_convention='full', pad=(0,0), kernel=(3,3), stride=(2,2), pool_type='max')
 res2a_branch1 = mx.symbol.Convolution(name='res2a_branch1', data=pool1 , num_filter=256, pad=(0, 0), kernel=(1,1), stride=(1,1), no_bias=True)
 bn2a_branch1 = mx.symbol.BatchNorm(name='bn2a_branch1', data=res2a_branch1 , use_global_stats=True, fix_gamma=False, eps=0.00001, cudnn_off=True)
 res2a_branch2a = mx.symbol.Convolution(name='res2a_branch2a', data=pool1 , num_filter=64, pad=(0, 0), kernel=(1,1), stride=(1,1), no_bias=True)
@@ -344,14 +347,11 @@ bn4b22_branch2c = mx.symbol.BatchNorm(name='bn4b22_branch2c', data=res4b22_branc
 res4b22 = mx.symbol.broadcast_add(name='res4b22', *[res4b21_relu,bn4b22_branch2c] )
 res4b22_relu = mx.symbol.Activation(name='res4b22_relu', data=res4b22 , act_type='relu')
 score_res4 = mx.symbol.Convolution(name='score_res4', data=res4b22_relu , num_filter=125, pad=(0, 0), kernel=(1,1), stride=(1,1), no_bias=False)
-score4 = mx.symbol.Deconvolution(name='score4', data=score_res4 , num_filter=125, pad=(0, 0), kernel=(4,4), stride=(2,2), no_bias=True)
+score4 = mx.symbol.Deconvolution(name='score4', data=score_res4 , num_filter=125, pad=(1, 1), adj=(1, 1), kernel=(4,4), stride=(2,2), no_bias=True)
+score4 = mx.symbol.slice(name='score4_sliced', data=score4, begin=(0,0,0,0), end=(None,None,-2,-2))
 score_res3 = mx.symbol.Convolution(name='score_res3', data=res3b3_relu , num_filter=125, pad=(0, 0), kernel=(1,1), stride=(1,1), no_bias=False)
-# As the convolution block make input padding and output downsampling, the deconvolution block should make input upsampling and OUTPUT CROPPING.
-# It's tricky to crop the deconvolution result with 'slice' op, same to the crop param [1,2,1,2] of ConvTranspose in matconvnet.
-score4_sliced = mx.symbol.slice(name='score4_sliced', data=score4, begin=(0,0,1,1), end=(None,None,-2,-2))
-crop = mx.symbol.Crop(name='crop', *[score_res3, score4_sliced] , center_crop=True)
-fusex = mx.symbol.broadcast_add(name='fusex', *[score4_sliced,crop] )
-
+crop = mx.symbol.Crop(name='crop', *[score_res3, score4] , center_crop=True)
+fusex = mx.symbol.broadcast_add(name='fusex', *[score4, crop] )
 
 # In[67]:
 
@@ -459,6 +459,13 @@ for k, layer in enumerate(layers):
 # In[126]:
 
 fusex.save('hr101-symbol.json')
+
+meta_file = open('meta.pkl', 'wb')
+
+pickle.dump(clusters, meta_file, 1)
+pickle.dump(averageImage, meta_file, 1)
+
+meta_file.close()
 
 
 # In[127]:
